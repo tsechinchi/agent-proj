@@ -10,6 +10,7 @@ dependencies = [
     "google-auth>=2.47.0",
     "langchain>=1.2.3",
     "langchain-openai>=1.1.7",
+    "reportlab>=4.4.7",
     "requests>=2.31.0",
     "serpapi>=0.1.5",
 ]
