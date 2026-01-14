@@ -1,6 +1,14 @@
 from langchain.tools import tool 
 from typing import Optional
 from pydantic import BaseModel, Field
+import datetime
+import base64
+from email.message import EmailMessage
+import mimetypes
+import os
+import google.auth
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # --- Planning & Search Schemas ---
 
@@ -88,4 +96,44 @@ def generate_pdf_itinerary(itinerary_details: str) -> str:
 
 @tool(args_schema=EmailInput)
 def email_sender(recipient_email: str, subject: str, body: str, attachment_path: Optional[str] = None) -> str:
-   return "0"
+    """Send email with optional attachment.
+    Input: recipient_email, subject, body, attachment_path (optional).
+    Output: 'Message Id: <id>' on success or 'error: <msg>' on failure.
+    """
+    creds, _ = google.auth.default()
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        # get authenticated sender address
+        profile = service.users().getProfile(userId="me").execute()
+        sender = profile.get("emailAddress")
+
+        message = EmailMessage()
+        message["To"] = recipient_email
+        if sender:
+            message["From"] = sender
+        message["Subject"] = subject
+        message.set_content(body)
+
+        if attachment_path:
+            if not os.path.isfile(attachment_path):
+                return f"error: attachment not found: {attachment_path}"
+            content_type, _ = mimetypes.guess_type(attachment_path)
+            if content_type is None:
+                content_type = "application/octet-stream"
+            maintype, subtype = content_type.split("/", 1)
+            with open(attachment_path, "rb") as fp:
+                data = fp.read()
+            message.add_attachment(data, maintype=maintype, subtype=subtype, filename=os.path.basename(attachment_path))
+
+        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        send_body = {"raw": encoded_message}
+        sent = service.users().messages().send(userId="me", body=send_body).execute()
+        return f"Message Id: {sent.get('id')}"
+    except HttpError as e:
+        return f"error: {e}"
+    except Exception as e:
+        return f"error: {e}"
+
+@tool
+def current_date() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d")
