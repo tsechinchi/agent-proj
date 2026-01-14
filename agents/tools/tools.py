@@ -19,7 +19,10 @@ import requests
 import google.auth
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from dotenv import load_dotenv
 
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # API Timeouts (in seconds)
