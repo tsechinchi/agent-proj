@@ -25,6 +25,9 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Feature flags
+ALLOW_AUTO_EMAIL_PDF = os.getenv("ALLOW_AUTO_EMAIL_PDF", "false").lower() == "true"
+
 # API Timeouts (in seconds)
 API_TIMEOUT_SHORT = 10
 API_TIMEOUT_LONG = 15
@@ -377,6 +380,8 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
 @tool(args_schema=PDFInput)
 def generate_pdf_itinerary(itinerary_details: str) -> str:
     """Convert itinerary text into a PDF file and return its path."""
+    if not ALLOW_AUTO_EMAIL_PDF:
+        return "Human approval required before generating PDF. Set ALLOW_AUTO_EMAIL_PDF=true to enable."
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -417,6 +422,9 @@ def email_sender(recipient_email: str, subject: str, body: str, attachment_path:
     Input: recipient_email, subject, body, attachment_path (optional).
     Output: 'Message Id: <message_id>' on success or 'error: <msg>' on failure.
     """
+
+    if not ALLOW_AUTO_EMAIL_PDF:
+        return "Human approval required before sending email. Set ALLOW_AUTO_EMAIL_PDF=true to enable."
 
     try:
         creds, _ = google.auth.default()
