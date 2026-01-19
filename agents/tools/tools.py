@@ -16,14 +16,12 @@ from email.message import EmailMessage
 from pydantic import BaseModel, Field
 from langchain.tools import tool
 import requests
-import google.auth
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+import hashlib
 
 # Feature flags
 ALLOW_AUTO_EMAIL_PDF = os.getenv("ALLOW_AUTO_EMAIL_PDF", "false").lower() == "true"
@@ -85,8 +83,9 @@ class EmailInput(BaseModel):
 
 @tool(args_schema=FlightSearchInput)
 def find_flights(origin: str, destination: str, depart_date: str, return_date: Optional[str] = None, adults: int = 1, children: int = 0) -> str:
-    """Search for flights using the Amadeus Flight Offers API.
-    Returns top 3 offers formatted with price and segment details.
+    """Search for flights using free mock data (no API key required).
+    Returns top 3 sample offers formatted with price and segment details.
+    For production, integrate with Skyscanner API or other free alternatives.
     """
     # Validate date formats
     is_valid, err_msg = validate_date_format(depart_date, "depart_date")
@@ -98,85 +97,38 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
         if not is_valid:
             return err_msg
     
-    client_id = os.getenv("AMADEUS_CLIENT_ID")
-    client_secret = os.getenv("AMADEUS_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        return "error: AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET must be set in environment"
-
-    env = os.getenv("AMADEUS_ENV", "test").lower()
-    token_url = "https://test.api.amadeus.com/v1/security/oauth2/token" if env == "test" else "https://api.amadeus.com/v1/security/oauth2/token"
-    offers_url = "https://test.api.amadeus.com/v2/shopping/flight-offers" if env == "test" else "https://api.amadeus.com/v2/shopping/flight-offers"
-
-    try:
-        # Obtain access token
-        token_resp = requests.post(
-            token_url,
-            data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
-            timeout=API_TIMEOUT_SHORT,
-        )
-        token_resp.raise_for_status()
-        token = token_resp.json().get("access_token")
-        if not token:
-            return "error: failed to obtain Amadeus access token"
-
-        headers = {"Authorization": f"Bearer {token}"}
-        params = {
-            "originLocationCode": origin,
-            "destinationLocationCode": destination,
-            "departureDate": depart_date,
-            "adults": adults,
-            "max": 10,
-        }
-        if children and children > 0:
-            params["children"] = children
+    import random
+    
+    # Generate realistic mock flight data
+    carriers = ["AA", "DL", "UA", "BA", "LH", "AF", "KL"]
+    base_price = random.randint(200, 800)
+    
+    logger.info(f"Flight search (mock): {origin} -> {destination} on {depart_date}")
+    
+    results = []
+    for idx in range(1, 4):
+        carrier = random.choice(carriers)
+        flight_num = random.randint(100, 999)
+        price = base_price + random.randint(-100, 200)
+        dep_time = f"{depart_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
+        arr_time = f"{depart_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
+        
+        flight_info = f"{carrier}{flight_num}: {origin} {dep_time} -> {destination} {arr_time}"
         if return_date:
-            params["returnDate"] = return_date
-
-        resp = requests.get(offers_url, headers=headers, params=params, timeout=API_TIMEOUT_LONG)
-        resp.raise_for_status()
-        data = resp.json()
-
-        offers = data.get("data", [])
-        if not offers:
-            return f"No flights found for {origin} -> {destination} on {depart_date}."
-
-        logger.info(f"Flight search: {origin} -> {destination}, found {len(offers)} offers")
-        results = []
-        for idx, offer in enumerate(offers[:3], start=1):
-            price = offer.get("price", {}).get("grandTotal") or offer.get("price", {}).get("total") or ""
-            itineraries = []
-            for itin in offer.get("itineraries", []):
-                segs = []
-                for seg in itin.get("segments", []):
-                    dep = seg.get("departure", {})
-                    arr = seg.get("arrival", {})
-                    carrier = seg.get("carrierCode", "")
-                    number = seg.get("number", "")
-                    dep_code = dep.get("iataCode", "")
-                    arr_code = arr.get("iataCode", "")
-                    dep_time = dep.get("at", "")
-                    arr_time = arr.get("at", "")
-                    segs.append(f"{carrier}{number}: {dep_code} {dep_time} -> {arr_code} {arr_time}")
-                itineraries.append("; ".join(segs))
-            results.append(f"{idx}. {price} — {' | '.join(itineraries)}")
-
-        return "\n".join(results)
-    except requests.HTTPError as e:
-        logger.error(f"Flight search HTTP error: {e}")
-        return f"error: HTTP error from Amadeus API: {e}"
-    except Exception as e:
-        logger.error(f"Flight search error: {e}")
-        return f"error: {e}"
+            ret_dep = f"{return_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
+            ret_arr = f"{return_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
+            return_info = f"{carrier}{flight_num+1}: {destination} {ret_dep} -> {origin} {ret_arr}"
+            flight_info = f"{flight_info} | {return_info}"
+        
+        results.append(f"{idx}. ${price} — {flight_info}")
+    
+    return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
 
 @tool(args_schema=HotelSearchInput)
 def find_hotels(destination: str, check_in: str, check_out: str, budget: Optional[str] = None) -> str:
-    """Find hotel options for destination and date range using the Amadeus Hotel Offers API.
-
-    Environment variables required:
-    - `AMADEUS_CLIENT_ID` and `AMADEUS_CLIENT_SECRET`.
-    - `AMADEUS_ENV` optional (default: `test`).
-    
-    Budget parameter filters results by price tier (if applicable).
+    """Find hotel options using free mock data (no API key required).
+    Returns sample hotel offers with realistic pricing.
+    For production, integrate with Booking.com API or other free alternatives.
     """
     # Validate date formats
     is_valid, err_msg = validate_date_format(check_in, "check_in")
@@ -187,125 +139,80 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
     if not is_valid:
         return err_msg
     
-    client_id = os.getenv("AMADEUS_CLIENT_ID")
-    client_secret = os.getenv("AMADEUS_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        return "error: AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET must be set in environment"
-
-    env = os.getenv("AMADEUS_ENV", "test").lower()
-    token_url = "https://test.api.amadeus.com/v1/security/oauth2/token" if env == "test" else "https://api.amadeus.com/v1/security/oauth2/token"
-    loc_url = "https://test.api.amadeus.com/v1/reference-data/locations" if env == "test" else "https://api.amadeus.com/v1/reference-data/locations"
-    offers_url = "https://test.api.amadeus.com/v2/shopping/hotel-offers" if env == "test" else "https://api.amadeus.com/v2/shopping/hotel-offers"
-
-    try:
-        # Obtain access token
-        token_resp = requests.post(
-            token_url,
-            data={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
-            timeout=API_TIMEOUT_SHORT,
-        )
-        token_resp.raise_for_status()
-        token = token_resp.json().get("access_token")
-        if not token:
-            return "error: failed to obtain Amadeus access token"
-
-        headers = {"Authorization": f"Bearer {token}"}
-
-        # Resolve destination to a cityCode (try CITY subtype)
-        loc_params = {"keyword": destination, "subType": "CITY"}
-        loc_resp = requests.get(loc_url, headers=headers, params=loc_params, timeout=API_TIMEOUT_SHORT)
-        loc_resp.raise_for_status()
-        loc_data = loc_resp.json().get("data", [])
-
-        city_code = None
-        if loc_data:
-            first = loc_data[0]
-            # try common fields
-            city_code = first.get("iataCode") or first.get("id") or first.get("subType")
-
-        # Error if city lookup failed
-        if not city_code:
-            logger.warning(f"Could not resolve city code for destination: {destination}")
-            return f"error: could not resolve destination '{destination}' to a city code. Please try a more specific city name."
-
-        params = {
-            "cityCode": city_code,
-            "checkInDate": check_in,
-            "checkOutDate": check_out,
-            "adults": 1,
-            "roomQuantity": 1,
-            "bestRateOnly": True,
-        }
-        # Note: budget filtering would require parsing price from API response
-        # and comparing to budget parameter if provided
-
-        resp = requests.get(offers_url, headers=headers, params=params, timeout=API_TIMEOUT_LONG)
-        resp.raise_for_status()
-        data = resp.json()
-
-        offers = data.get("data", [])
-        if not offers:
-            return f"No hotels found for {destination} ({city_code}) between {check_in} and {check_out}."
-
-        logger.info(f"Hotel search: {destination}, found {len(offers)} offers")
-        results = []
-        for idx, offer in enumerate(offers[:5], start=1):
-            hotel = offer.get("hotel", {})
-            name = hotel.get("name", "(no name)")
-            address_parts = hotel.get("address", {}).get("lines", []) or []
-            city_name = hotel.get("address", {}).get("cityName", "")
-            address = ", ".join(address_parts + ([city_name] if city_name else []))
-
-            first_offer = (offer.get("offers") or [{}])[0]
-            price = first_offer.get("price", {}).get("total") or first_offer.get("price", {}).get("grandTotal") or ""
-            link = first_offer.get("self") or first_offer.get("id") or ""
-
-            results.append(f"{idx}. {name} — {address} — {price} — {link}")
-
-        return "\n".join(results)
-    except requests.HTTPError as e:
-        logger.error(f"Hotel search HTTP error: {e}")
-        return f"error: HTTP error from Amadeus API: {e}"
-    except Exception as e:
-        logger.error(f"Hotel search error: {e}")
-        return f"error: {e}"
+    import random
+    
+    # Calculate nights
+    check_in_dt = datetime.datetime.strptime(check_in, "%Y-%m-%d")
+    check_out_dt = datetime.datetime.strptime(check_out, "%Y-%m-%d")
+    nights = (check_out_dt - check_in_dt).days
+    
+    logger.info(f"Hotel search (mock): {destination}, {nights} nights")
+    
+    # Sample hotel names and types
+    hotel_types = [
+        ("Grand Hotel", "luxury", 200, 400),
+        ("Comfort Inn", "mid-range", 80, 150),
+        ("Budget Hostel", "budget", 30, 60),
+        ("Boutique Suites", "mid-range", 120, 200),
+        ("Downtown Lodge", "budget", 50, 90)
+    ]
+    
+    results = []
+    for idx, (name, tier, min_price, max_price) in enumerate(hotel_types, start=1):
+        price_per_night = random.randint(min_price, max_price)
+        total_price = price_per_night * nights
+        address = f"{random.randint(1, 999)} Main St, {destination}"
+        
+        results.append(f"{idx}. {name} {destination} — {address} — ${total_price} ({nights} nights @ ${price_per_night}/night) — {tier}")
+    
+    return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
 
 @tool(args_schema=AttractionInput)
 def attraction_finder(destination: str, interests: Optional[str] = None) -> str:
-    """List attractions in a city tailored to user interests.
+    """List attractions in a city using free Wikipedia API (no API key required).
+    Searches Wikipedia for destination information and extracts key attractions.
     """
-    api_key = os.getenv("GOOGLE_CLOUD_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    cx = os.getenv("GOOGLE_CSE_ID") or os.getenv("GOOGLE_CUSTOM_SEARCH_CX") or os.getenv("GOOGLE_CX")
-
-    if not api_key:
-        return "error: GOOGLE_CLOUD_API_KEY or GOOGLE_API_KEY not set in environment"
-    if not cx:
-        return "error: GOOGLE_CSE_ID (custom search engine id) not set in environment"
-
-    # Build a friendly query combining destination and optional interests
-    query = f"top attractions in {destination}"
-    if interests:
-        query = f"{interests} {query}"
-
     try:
-        service = build("customsearch", "v1", developerKey=api_key)
-        resp = service.cse().list(q=query, cx=cx, num=10).execute()
-        items = resp.get("items", [])
-
-        if not items:
-            return f"No attractions found for {destination} (query: '{query}')."
-
+        # Use Wikipedia API (completely free, no key needed)
+        search_query = f"{destination} tourism attractions"
+        if interests:
+            search_query = f"{destination} {interests}"
+        
+        # Search Wikipedia
+        search_url = "https://en.wikipedia.org/w/api.php"
+        search_params = {
+            "action": "opensearch",
+            "search": search_query,
+            "limit": 5,
+            "format": "json"
+        }
+        
+        resp = requests.get(search_url, params=search_params, timeout=API_TIMEOUT_SHORT)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if len(data) < 4 or not data[1]:
+            return f"No attractions found for {destination} on Wikipedia."
+        
+        titles = data[1]
+        descriptions = data[2]
+        urls = data[3]
+        
+        logger.info(f"Attraction search (Wikipedia): {destination}, found {len(titles)} results")
+        
         results = []
-        for idx, it in enumerate(items[:5], start=1):
-            title = it.get("title", "(no title)")
-            snippet = it.get("snippet", "")
-            link = it.get("link", "")
-            results.append(f"{idx}. {title} — {snippet} — {link}")
-
+        for idx, (title, desc, url) in enumerate(zip(titles, descriptions, urls), start=1):
+            results.append(f"{idx}. {title} — {desc} — {url}")
+        
+        if not results:
+            return f"No specific attractions found for {destination}. Try a more specific search."
+        
         return "\n".join(results)
-    except HttpError as e:
-        return f"error: Google API HTTP error: {e}"
+    except requests.HTTPError as e:
+        logger.error(f"Wikipedia API HTTP error: {e}")
+        return f"error: Wikipedia API error: {e}"
     except Exception as e:
+        logger.error(f"Attraction search error: {e}")
         return f"error: {e}"
 
 @tool(args_schema=WeatherInput)
@@ -317,8 +224,39 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
     - If `date` provided (YYYY-MM-DD), attempts to return forecast for that date (up to ~5 days ahead).
     """
     api_key = os.getenv("OPENWEATHER_API_KEY")
+    # If no API key is provided, use a deterministic mock weather response
     if not api_key:
-        return "error: OPENWEATHER_API_KEY not set in environment"
+        logger.info("OPENWEATHER_API_KEY not set — using mock weather data")
+
+        def _mock_weather(dest: str, d: Optional[str] = None) -> str:
+            seed_input = f"{dest}:{d or 'now'}"
+            seed = int(hashlib.sha256(seed_input.encode()).hexdigest(), 16) % (2 ** 32)
+            rnd = __import__("random").Random(seed)
+            desc_opts = [
+                "clear sky",
+                "few clouds",
+                "scattered clouds",
+                "light rain",
+                "moderate rain",
+                "overcast clouds",
+                "thunderstorm",
+                "snow",
+            ]
+            desc = rnd.choice(desc_opts)
+            temp = round(rnd.uniform(5.0, 30.0), 1)
+            feels = round(temp + rnd.uniform(-3.0, 3.0), 1)
+            humidity = rnd.randint(30, 90)
+            if not d:
+                return f"Mock current weather in {dest}: {desc}, {temp}°C (feels like {feels}°C), humidity {humidity}%"
+            return f"Mock forecast for {dest} on {d}: {desc}, {temp}°C, humidity {humidity}%"
+
+        # If date provided, validate and return mock forecast
+        if date:
+            is_valid, err_msg = validate_date_format(date, "date")
+            if not is_valid:
+                return err_msg
+            return _mock_weather(destination, date)
+        return _mock_weather(destination, None)
 
     try:
         if not date:
@@ -418,54 +356,64 @@ def generate_pdf_itinerary(itinerary_details: str) -> str:
 
 @tool(args_schema=EmailInput)
 def email_sender(recipient_email: str, subject: str, body: str, attachment_path: Optional[str] = None) -> str:
-    """Send email with optional attachment.
+    """Send email with optional attachment using SMTP (Gmail or custom SMTP server).
+    Requires: SMTP_EMAIL, SMTP_PASSWORD, SMTP_SERVER (optional), SMTP_PORT (optional)
     Input: recipient_email, subject, body, attachment_path (optional).
-    Output: 'Message Id: <message_id>' on success or 'error: <msg>' on failure.
+    Output: 'Email sent successfully' on success or 'error: <msg>' on failure.
     """
 
     if not ALLOW_AUTO_EMAIL_PDF:
         return "Human approval required before sending email. Set ALLOW_AUTO_EMAIL_PDF=true to enable."
 
-    try:
-        creds, _ = google.auth.default()
-    except Exception as e:
-        logger.error(f"Failed to obtain Google credentials: {e}")
-        return f"error: failed to obtain Google credentials. Ensure GOOGLE_APPLICATION_CREDENTIALS is set: {e}"
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    smtp_email = os.getenv("SMTP_EMAIL")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")  # Default to Gmail
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))  # Default TLS port
+    
+    if not smtp_email or not smtp_password:
+        return "error: SMTP_EMAIL and SMTP_PASSWORD must be set in environment. For Gmail, use an app-specific password."
     
     try:
-        service = build("gmail", "v1", credentials=creds)
-        # get authenticated sender address
-        profile = service.users().getProfile(userId="me").execute() 
-        sender = profile.get("emailAddress")
+        msg = MIMEMultipart()
+        msg["From"] = smtp_email
+        msg["To"] = recipient_email
+        msg["Subject"] = subject
+        
 
-        message = EmailMessage()
-        message["To"] = recipient_email
-        if sender:
-            message["From"] = sender
-        message["Subject"] = subject
-        message.set_content(body)
-
+        msg.attach(MIMEText(body, "plain"))
+        
+        # Add attachment if provided
         if attachment_path:
             if not os.path.isfile(attachment_path):
                 return f"error: attachment not found: {attachment_path}"
-            content_type, _ = mimetypes.guess_type(attachment_path)
-            if content_type is None:
-                content_type = "application/octet-stream"
-            maintype, subtype = content_type.split("/", 1)
-            with open(attachment_path, "rb") as fp:
-                data = fp.read()
-            message.add_attachment(data, maintype=maintype, subtype=subtype, filename=os.path.basename(attachment_path))
-
-        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        send_body = {"raw": encoded_message}
-        sent = service.users().messages().send(userId="me", body=send_body).execute()
-        message_id = sent.get('id')
-        logger.info(f"Email sent successfully: {message_id}")
-        return f"Message Id: {message_id}"
-    except HttpError as e:
-        logger.error(f"Gmail API error: {e}")
-        return f"error: Gmail API error: {e}"
+            
+            with open(attachment_path, "rb") as attachment:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(attachment.read())
+            
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f"attachment; filename= {os.path.basename(attachment_path)}",
+            )
+            msg.attach(part)
+        
+        # Connect and send
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()  
+            server.login(smtp_email, smtp_password)
+            server.send_message(msg)
+        
+        logger.info(f"Email sent successfully to {recipient_email}")
+        return f"Email sent successfully to {recipient_email}"
+    
     except Exception as e:
         logger.error(f"Email send error: {e}")
-        return f"error: {e}"
+        return f"error: failed to send email: {e}"
 
