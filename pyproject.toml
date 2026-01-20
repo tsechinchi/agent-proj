@@ -5,11 +5,12 @@ description = "Multi-agent travel planning system with Phoenix observability, Ne
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "arize-phoenix>=4.0.0",
+    "arize>=7.51.2",
     "langchain>=1.2.3",
     "langchain-core>=1.2.7",
     "langchain-openai>=1.1.7",
     "langgraph>=1.0.6",
+    "onnx>=1.20.1",
     "onnxruntime>=1.23.2",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -17,5 +18,6 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "reportlab>=4.4.7",
     "requests>=2.31.0",
+    "arize-phoenix>=12.30.0",
     "torch>=2.9.1",
 ]
