@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 from langchain.tools import tool
 import requests
 from dotenv import load_dotenv
+import json
+import random
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -97,32 +99,97 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
         if not is_valid:
             return err_msg
     
-    import random
-    
-    # Generate realistic mock flight data
-    carriers = ["AA", "DL", "UA", "BA", "LH", "AF", "KL"]
-    base_price = random.randint(200, 800)
-    
-    logger.info(f"Flight search (mock): {origin} -> {destination} on {depart_date}")
-    
-    results = []
-    for idx in range(1, 4):
-        carrier = random.choice(carriers)
-        flight_num = random.randint(100, 999)
-        price = base_price + random.randint(-100, 200)
-        dep_time = f"{depart_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
-        arr_time = f"{depart_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
-        
-        flight_info = f"{carrier}{flight_num}: {origin} {dep_time} -> {destination} {arr_time}"
+    # Try Amadeus free dev APIs if API keys are provided. Fall back to mock data otherwise.
+    # Support a couple common env var names for compatibility
+    amadeus_id = os.getenv("AMADEUS_CLIENT_ID") or os.getenv("AMADEUS_ID")
+    amadeus_secret = os.getenv("AMADEUS_CLIENT_SECRET") or os.getenv("AMADEUS_SECRET")
+
+    def _mock_flights():
+        import random
+        carriers = ["AA", "DL", "UA", "BA", "LH", "AF", "KL"]
+        base_price = random.randint(200, 800)
+        results = []
+        for idx in range(1, 4):
+            carrier = random.choice(carriers)
+            flight_num = random.randint(100, 999)
+            price = base_price + random.randint(-100, 200)
+            dep_time = f"{depart_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
+            arr_time = f"{depart_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
+            flight_info = f"{carrier}{flight_num}: {origin} {dep_time} -> {destination} {arr_time}"
+            if return_date:
+                ret_dep = f"{return_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
+                ret_arr = f"{return_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
+                return_info = f"{carrier}{flight_num+1}: {destination} {ret_dep} -> {origin} {ret_arr}"
+                flight_info = f"{flight_info} | {return_info}"
+            results.append(f"{idx}. ${price} — {flight_info}")
+        return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
+
+    if not amadeus_id or not amadeus_secret:
+        logger.info("AMADEUS credentials not set — using mock flight data")
+        return _mock_flights()
+
+    # Obtain OAuth token from Amadeus test environment
+    try:
+        token_resp = requests.post(
+            "https://test.api.amadeus.com/v1/security/oauth2/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": amadeus_id,
+                "client_secret": amadeus_secret,
+            },
+            timeout=API_TIMEOUT_SHORT,
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json().get("access_token")
+        if not access_token:
+            logger.warning("Amadeus token response missing access_token — falling back to mock")
+            return _mock_flights()
+
+        params = {
+            "originLocationCode": origin,
+            "destinationLocationCode": destination,
+            "departureDate": depart_date,
+            "adults": adults,
+            "max": 3,
+        }
         if return_date:
-            ret_dep = f"{return_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
-            ret_arr = f"{return_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
-            return_info = f"{carrier}{flight_num+1}: {destination} {ret_dep} -> {origin} {ret_arr}"
-            flight_info = f"{flight_info} | {return_info}"
-        
-        results.append(f"{idx}. ${price} — {flight_info}")
-    
-    return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
+            params["returnDate"] = return_date
+
+        resp = requests.get(
+            "https://test.api.amadeus.com/v2/shopping/flight-offers",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+            timeout=API_TIMEOUT_LONG,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        items = data.get("data") or []
+        if not items:
+            return "No flight offers found (Amadeus).\n\n(Mock data below)\n" + _mock_flights()
+
+        results = []
+        for idx, item in enumerate(items[:3], start=1):
+            # price extraction is best-effort; Amadeus may use different fields
+            price = (item.get("price") or {}).get("grandTotal") or (item.get("price") or {}).get("total")
+            itineraries = item.get("itineraries", [])
+            segs = []
+            for itin in itineraries:
+                for seg in itin.get("segments", []):
+                    carrier = seg.get("carrierCode")
+                    num = seg.get("number")
+                    dep = seg.get("departure", {}).get("iataCode")
+                    arr = seg.get("arrival", {}).get("iataCode")
+                    dep_t = seg.get("departure", {}).get("at")
+                    arr_t = seg.get("arrival", {}).get("at")
+                    segs.append(f"{carrier}{num}: {dep} {dep_t} -> {arr} {arr_t}")
+            info = " | ".join(segs) if segs else json.dumps(item)
+            results.append(f"{idx}. ${price} — {info}")
+
+        return "\n".join(results)
+    except Exception as e:
+        logger.error(f"Amadeus flight search error: {e}")
+        return _mock_flights()
 
 @tool(args_schema=HotelSearchInput)
 def find_hotels(destination: str, check_in: str, check_out: str, budget: Optional[str] = None) -> str:
@@ -139,33 +206,98 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
     if not is_valid:
         return err_msg
     
-    import random
-    
-    # Calculate nights
-    check_in_dt = datetime.datetime.strptime(check_in, "%Y-%m-%d")
-    check_out_dt = datetime.datetime.strptime(check_out, "%Y-%m-%d")
-    nights = (check_out_dt - check_in_dt).days
-    
-    logger.info(f"Hotel search (mock): {destination}, {nights} nights")
-    
-    # Sample hotel names and types
-    hotel_types = [
-        ("Grand Hotel", "luxury", 200, 400),
-        ("Comfort Inn", "mid-range", 80, 150),
-        ("Budget Hostel", "budget", 30, 60),
-        ("Boutique Suites", "mid-range", 120, 200),
-        ("Downtown Lodge", "budget", 50, 90)
-    ]
-    
-    results = []
-    for idx, (name, tier, min_price, max_price) in enumerate(hotel_types, start=1):
-        price_per_night = random.randint(min_price, max_price)
-        total_price = price_per_night * nights
-        address = f"{random.randint(1, 999)} Main St, {destination}"
+    # Try Amadeus hotel search if credentials present; otherwise use deterministic mock
+    amadeus_id = os.getenv("AMADEUS_CLIENT_ID") or os.getenv("AMDEUS_CLIENT_ID")
+    amadeus_secret = os.getenv("AMADEUS_CLIENT_SECRET") or os.getenv("AMDEUS_CLIENT_SECRET")
+
+    def _mock_hotels():
         
-        results.append(f"{idx}. {name} {destination} — {address} — ${total_price} ({nights} nights @ ${price_per_night}/night) — {tier}")
-    
-    return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
+        check_in_dt = datetime.datetime.strptime(check_in, "%Y-%m-%d")
+        check_out_dt = datetime.datetime.strptime(check_out, "%Y-%m-%d")
+        nights = (check_out_dt - check_in_dt).days
+        hotel_types = [
+            ("Grand Hotel", "luxury", 200, 400),
+            ("Comfort Inn", "mid-range", 80, 150),
+            ("Budget Hostel", "budget", 30, 60),
+            ("Boutique Suites", "mid-range", 120, 200),
+            ("Downtown Lodge", "budget", 50, 90)
+        ]
+        results = []
+        for idx, (name, tier, min_price, max_price) in enumerate(hotel_types, start=1):
+            price_per_night = random.randint(min_price, max_price)
+            total_price = price_per_night * nights
+            address = f"{random.randint(1, 999)} Main St, {destination}"
+            results.append(f"{idx}. {name} {destination} — {address} — ${total_price} ({nights} nights @ ${price_per_night}/night) — {tier}")
+        return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
+
+    if not amadeus_id or not amadeus_secret:
+        logger.info("AMADEUS credentials not set — using mock hotel data")
+        return _mock_hotels()
+
+    # Get token
+    try:
+        token_resp = requests.post(
+            "https://test.api.amadeus.com/v1/security/oauth2/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": amadeus_id,
+                "client_secret": amadeus_secret,
+            },
+            timeout=API_TIMEOUT_SHORT,
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json().get("access_token")
+        if not access_token:
+            logger.warning("Amadeus token response missing access_token — falling back to mock hotels")
+            return _mock_hotels()
+
+        # Resolve city code via reference-data locations
+        loc_resp = requests.get(
+            "https://test.api.amadeus.com/v1/reference-data/locations",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"subType": "CITY", "keyword": destination, "page[limit]": 1},
+            timeout=API_TIMEOUT_SHORT,
+        )
+        loc_resp.raise_for_status()
+        loc_data = loc_resp.json().get("data") or []
+        if not loc_data:
+            return _mock_hotels()
+        city_code = loc_data[0].get("iataCode") or loc_data[0].get("cityCode") or loc_data[0].get("id")
+        if not city_code:
+            return _mock_hotels()
+
+        params = {
+            "cityCode": city_code,
+            "checkInDate": check_in,
+            "checkOutDate": check_out,
+            "roomQuantity": 1,
+            "adults": 1,
+            "bestRateOnly": True,
+        }
+        resp = requests.get(
+            "https://test.api.amadeus.com/v2/shopping/hotel-offers",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+            timeout=API_TIMEOUT_LONG,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        offers = data.get("data") or []
+        if not offers:
+            return "No hotel offers found (Amadeus).\n\n(Mock data below)\n" + _mock_hotels()
+
+        results = []
+        for idx, off in enumerate(offers[:5], start=1):
+            hotel = off.get("hotel", {})
+            name = hotel.get("name") or json.dumps(hotel)
+            price = (off.get("offers") or [{}])[0].get("price", {}).get("total")
+            address = ", ".join(hotel.get("address", {}).get("lines", []) or [])
+            results.append(f"{idx}. {name} — {address} — ${price}")
+
+        return "\n".join(results)
+    except Exception as e:
+        logger.error(f"Amadeus hotel search error: {e}")
+        return _mock_hotels()
 
 @tool(args_schema=AttractionInput)
 def attraction_finder(destination: str, interests: Optional[str] = None) -> str:
