@@ -21,16 +21,57 @@ import json
 import random
 
 load_dotenv()
+load_dotenv("keys.env", override=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 import hashlib
 
 # Feature flags
 ALLOW_AUTO_EMAIL_PDF = os.getenv("ALLOW_AUTO_EMAIL_PDF", "false").lower() == "true"
+# Test-only: allow a second, more permissive hotel-offers attempt if the first returns no data.
+ALLOW_HOTEL_TEST_RETRY = os.getenv("AMADEUS_TEST_HOTEL_RETRY", "true").lower() == "true"
 
 # API Timeouts (in seconds)
 API_TIMEOUT_SHORT = 10
 API_TIMEOUT_LONG = 15
+
+AMADEUS_USE_PROD = False
+AMADEUS_BASE_HOST = os.getenv("AMADEUS_BASE_HOST", "test.api.amadeus.com")
+
+def parse_destination(raw: str) -> tuple[str, str]:
+    """Return (iata_like, city_like) from a free-form destination string."""
+    txt = (raw or "").strip()
+    base = txt.split(",")[0].strip() if "," in txt else txt
+    if len(base) == 3 and base.isalpha():
+        code = base.upper()
+        return code, iata_to_city(code)
+    # If it's not an IATA code, treat as city name
+    return base, base
+
+
+def iata_to_city(code: str) -> str:
+    """Best-effort map from IATA code to city name for downstream lookups."""
+    mapping = {
+        "HND": "Tokyo",
+        "NRT": "Tokyo",
+        "HKG": "Hong Kong",
+        "JFK": "New York",
+        "LGA": "New York",
+        "EWR": "New York",
+        "LHR": "London",
+        "LGW": "London",
+        "CDG": "Paris",
+        "ORY": "Paris",
+        "SFO": "San Francisco",
+        "LAX": "Los Angeles",
+        "ORD": "Chicago",
+        "DFW": "Dallas",
+        "ATL": "Atlanta",
+        "SIN": "Singapore",
+        "SYD": "Sydney",
+    }
+    key = (code or "").strip().upper()
+    return mapping.get(key, code)
 
 
 def validate_date_format(date_str: str, field_name: str = "date") -> tuple[bool, str]:
@@ -42,6 +83,37 @@ def validate_date_format(date_str: str, field_name: str = "date") -> tuple[bool,
         return True, ""
     except ValueError:
         return False, f"error: {field_name} must be in YYYY-MM-DD format, got '{date_str}'"
+
+
+def get_amadeus_token(client_id: str, client_secret: str) -> str | None:
+    """Fetch OAuth2 token from Amadeus test endpoint. Returns access_token or None.
+
+    Logs response text for debugging when token is missing or request fails.
+    """
+    try:
+        token_url = f"https://{AMADEUS_BASE_HOST}/v1/security/oauth2/token"
+        resp = requests.post(
+            token_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=API_TIMEOUT_SHORT,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"Amadeus token endpoint returned {resp.status_code}: {resp.text[:500]}")
+            resp.raise_for_status()
+        data = resp.json()
+        token = data.get("access_token")
+        if not token:
+            logger.warning(f"Amadeus token response missing access_token: {resp.text[:800]}")
+            return None
+        return token
+    except Exception as e:
+        logger.warning(f"Failed to obtain Amadeus token: {type(e).__name__} {e}")
+        return None
 
 
 # --- Planning & Search Schemas ---
@@ -99,8 +171,9 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
         if not is_valid:
             return err_msg
     
-    # Try Amadeus free dev APIs if API keys are provided. Fall back to mock data otherwise.
-    # Support a couple common env var names for compatibility
+    # Normalize destination
+    dest_code, dest_city = parse_destination(destination)
+
     amadeus_id = os.getenv("AMADEUS_CLIENT_ID") or os.getenv("AMADEUS_ID")
     amadeus_secret = os.getenv("AMADEUS_CLIENT_SECRET") or os.getenv("AMADEUS_SECRET")
 
@@ -115,11 +188,12 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
             price = base_price + random.randint(-100, 200)
             dep_time = f"{depart_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
             arr_time = f"{depart_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
-            flight_info = f"{carrier}{flight_num}: {origin} {dep_time} -> {destination} {arr_time}"
+            flight_info = f"{carrier}{flight_num}: {origin} {dep_time} -> {dest_code} {arr_time}"
             if return_date:
                 ret_dep = f"{return_date}T{random.randint(6, 20):02d}:{random.randint(0, 59):02d}:00"
                 ret_arr = f"{return_date}T{random.randint(10, 23):02d}:{random.randint(0, 59):02d}:00"
-                return_info = f"{carrier}{flight_num+1}: {destination} {ret_dep} -> {origin} {ret_arr}"
+                # Use parsed destination code to avoid mixing origin/destination
+                return_info = f"{carrier}{flight_num+1}: {dest_code} {ret_dep} -> {origin} {ret_arr}"
                 flight_info = f"{flight_info} | {return_info}"
             results.append(f"{idx}. ${price} — {flight_info}")
         return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
@@ -130,24 +204,13 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
 
     # Obtain OAuth token from Amadeus test environment
     try:
-        token_resp = requests.post(
-            "https://test.api.amadeus.com/v1/security/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": amadeus_id,
-                "client_secret": amadeus_secret,
-            },
-            timeout=API_TIMEOUT_SHORT,
-        )
-        token_resp.raise_for_status()
-        access_token = token_resp.json().get("access_token")
+        access_token = get_amadeus_token(amadeus_id, amadeus_secret)
         if not access_token:
-            logger.warning("Amadeus token response missing access_token — falling back to mock")
             return _mock_flights()
 
         params = {
             "originLocationCode": origin,
-            "destinationLocationCode": destination,
+            "destinationLocationCode": dest_code,
             "departureDate": depart_date,
             "adults": adults,
             "max": 3,
@@ -155,12 +218,25 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
         if return_date:
             params["returnDate"] = return_date
 
+        flight_url = f"https://{AMADEUS_BASE_HOST}/v2/shopping/flight-offers"
         resp = requests.get(
-            "https://test.api.amadeus.com/v2/shopping/flight-offers",
+            flight_url,
             headers={"Authorization": f"Bearer {access_token}"},
             params=params,
             timeout=API_TIMEOUT_LONG,
         )
+        # If unauthorized, try refresh token once
+        if resp.status_code == 401:
+            logger.info("Amadeus flight offers returned 401; refreshing token and retrying once")
+            access_token = get_amadeus_token(amadeus_id, amadeus_secret)
+            if not access_token:
+                return _mock_flights()
+            resp = requests.get(
+                flight_url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+                timeout=API_TIMEOUT_LONG,
+            )
         resp.raise_for_status()
         data = resp.json()
 
@@ -187,6 +263,9 @@ def find_flights(origin: str, destination: str, depart_date: str, return_date: O
             results.append(f"{idx}. ${price} — {info}")
 
         return "\n".join(results)
+    except requests.HTTPError as e:
+        logger.warning(f"Amadeus flight search HTTP error; returning mock: {e}")
+        return _mock_flights()
     except Exception as e:
         logger.error(f"Amadeus flight search error: {e}")
         return _mock_flights()
@@ -206,9 +285,12 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
     if not is_valid:
         return err_msg
     
-    # Try Amadeus hotel search if credentials present; otherwise use deterministic mock
-    amadeus_id = os.getenv("AMADEUS_CLIENT_ID") or os.getenv("AMDEUS_CLIENT_ID")
-    amadeus_secret = os.getenv("AMADEUS_CLIENT_SECRET") or os.getenv("AMDEUS_CLIENT_SECRET")
+    # Normalize destination for city-based search
+    raw_dest = destination
+    _, dest_city = parse_destination(destination)
+    logger.info(f"find_hotels called: raw_destination={raw_dest!r} parsed_city={dest_city!r}")
+    amadeus_id = os.getenv("AMADEUS_ID")
+    amadeus_secret = os.getenv("AMADEUS_SECRET")
 
     def _mock_hotels():
         
@@ -226,8 +308,8 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
         for idx, (name, tier, min_price, max_price) in enumerate(hotel_types, start=1):
             price_per_night = random.randint(min_price, max_price)
             total_price = price_per_night * nights
-            address = f"{random.randint(1, 999)} Main St, {destination}"
-            results.append(f"{idx}. {name} {destination} — {address} — ${total_price} ({nights} nights @ ${price_per_night}/night) — {tier}")
+            address = f"{random.randint(1, 999)} Main St, {dest_city}"
+            results.append(f"{idx}. {name} {dest_city} — {address} — ${total_price} ({nights} nights @ ${price_per_night}/night) — {tier}")
         return "\n".join(results) + "\n\n(Mock data - for demo purposes only)"
 
     if not amadeus_id or not amadeus_secret:
@@ -236,33 +318,37 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
 
     # Get token
     try:
-        token_resp = requests.post(
-            "https://test.api.amadeus.com/v1/security/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": amadeus_id,
-                "client_secret": amadeus_secret,
-            },
-            timeout=API_TIMEOUT_SHORT,
-        )
-        token_resp.raise_for_status()
-        access_token = token_resp.json().get("access_token")
+        access_token = get_amadeus_token(amadeus_id, amadeus_secret)
         if not access_token:
-            logger.warning("Amadeus token response missing access_token — falling back to mock hotels")
             return _mock_hotels()
 
         # Resolve city code via reference-data locations
+        loc_url = f"https://{AMADEUS_BASE_HOST}/v1/reference-data/locations"
         loc_resp = requests.get(
-            "https://test.api.amadeus.com/v1/reference-data/locations",
+            loc_url,
             headers={"Authorization": f"Bearer {access_token}"},
-            params={"subType": "CITY", "keyword": destination, "page[limit]": 1},
+            params={"subType": "CITY", "keyword": dest_city, "page[limit]": 1},
             timeout=API_TIMEOUT_SHORT,
         )
+        logger.info(f"Amadeus locations lookup status: {loc_resp.status_code}")
+        # If unauthorized, refresh token and retry once
+        if loc_resp.status_code == 401:
+            logger.info("Amadeus locations returned 401; refreshing token and retrying once")
+            access_token = get_amadeus_token(amadeus_id, amadeus_secret)
+            if not access_token:
+                return _mock_hotels()
+            loc_resp = requests.get(
+                "https://test.api.amadeus.com/v1/reference-data/locations",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"subType": "CITY", "keyword": dest_city, "page[limit]": 1},
+                timeout=API_TIMEOUT_SHORT,
+            )
         loc_resp.raise_for_status()
         loc_data = loc_resp.json().get("data") or []
         if not loc_data:
             return _mock_hotels()
         city_code = loc_data[0].get("iataCode") or loc_data[0].get("cityCode") or loc_data[0].get("id")
+        logger.info(f"Amadeus resolved city_code: {city_code}")
         if not city_code:
             return _mock_hotels()
 
@@ -274,17 +360,126 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
             "adults": 1,
             "bestRateOnly": True,
         }
-        resp = requests.get(
-            "https://test.api.amadeus.com/v2/shopping/hotel-offers",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params=params,
-            timeout=API_TIMEOUT_LONG,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        offers = data.get("data") or []
+
+        def _fetch_hotel_ids_by_city(city_code_inner: str, token: str) -> list:
+            """Query the Hotel List (by-city) endpoint to obtain hotelIds usable in sandbox.
+
+            Returns a list of hotel id strings (may be empty).
+            """
+            try:
+                by_city_url = f"https://{AMADEUS_BASE_HOST}/v1/reference-data/locations/hotels/by-city"
+                resp_ids = requests.get(
+                    by_city_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"cityCode": city_code_inner},
+                    timeout=API_TIMEOUT_SHORT,
+                )
+                logger.info(f"Amadeus hotel-list by-city status: {resp_ids.status_code}")
+                try:
+                    logger.info(f"Amadeus hotel-list body (truncated): {resp_ids.text[:800]}")
+                except Exception:
+                    pass
+                resp_ids.raise_for_status()
+                data_ids = resp_ids.json().get("data") or []
+                ids = []
+                for item in data_ids:
+                    hid = None
+                    if isinstance(item, dict):
+                        # Some sandbox shapes nest hotel info under 'hotel'
+                        hotelobj = item.get("hotel") or item
+                        if isinstance(hotelobj, dict):
+                            hid = hotelobj.get("hotelId") or hotelobj.get("id")
+                        if not hid:
+                            hid = item.get("hotelId") or item.get("id")
+                    if hid:
+                        ids.append(str(hid))
+                return ids
+            except Exception as e:
+                logger.info(f"Failed to fetch hotel ids by city: {e}")
+                return []
+
+        def _call_hotel_offers(call_params: dict, label: str) -> tuple[list, dict, int]:
+            offers_url = f"https://{AMADEUS_BASE_HOST}/v3/shopping/hotel-offers"
+            try:
+                resp_inner = requests.get(
+                    offers_url,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=call_params,
+                    timeout=API_TIMEOUT_LONG,
+                )
+            except Exception as e:
+                logger.info(f"Amadeus hotel-offers [{label}] request failed: {e}")
+                return [], {}, 0
+
+            logger.info(f"Amadeus hotel-offers [{label}] HTTP status: {resp_inner.status_code} params={call_params}")
+            try:
+                logger.info(f"Amadeus hotel-offers [{label}] body (truncated): {resp_inner.text[:800]}")
+            except Exception:
+                logger.info("Amadeus hotel-offers body unavailable for logging")
+            # Do not raise here: sandbox often returns 400 with a body explaining missing hotelIds.
+            # Instead, parse whatever JSON is present and return the status so caller can decide on retries.
+            try:
+                data_inner = resp_inner.json()
+            except Exception:
+                data_inner = {}
+            offers_inner = data_inner.get("data") or []
+            logger.info(
+                f"Amadeus hotel-offers [{label}] parsed: keys={list(data_inner.keys()) if isinstance(data_inner, dict) else []} offers_count={len(offers_inner)} status={resp_inner.status_code}"
+            )
+            return offers_inner, data_inner, resp_inner.status_code
+
+        offers, data, status = _call_hotel_offers(params, "primary")
+
+        # Optional: retry with relaxed filters in test mode to broaden results.
+        if not offers and ALLOW_HOTEL_TEST_RETRY:
+            retry_params = dict(params)
+            retry_params.update({"bestRateOnly": False, "adults": 2})
+            offers, data, status = _call_hotel_offers(retry_params, "retry")
+
+        # If still no offers, attempt to fetch hotelIds via Hotel List and retry with hotelIds.
+        if not offers and ALLOW_HOTEL_TEST_RETRY:
+            hotel_ids = _fetch_hotel_ids_by_city(city_code, access_token)
+            if hotel_ids:
+                # Try each hotel id individually (some sandbox ids return NO_ROOMS);
+                # fall back to a batch call if individual attempts fail.
+                found = False
+                for hid in hotel_ids[:10]:
+                    id_params = {
+                        "hotelIds": hid,
+                        "checkInDate": check_in,
+                        "checkOutDate": check_out,
+                        "roomQuantity": 1,
+                        "adults": 1,
+                        "bestRateOnly": True,
+                    }
+                    offers, data, status = _call_hotel_offers(id_params, f"hotelId:{hid}")
+                    # If rate limited, try a short retry once
+                    if status == 429:
+                        try:
+                            import time
+                            time.sleep(1)
+                            offers, data, status = _call_hotel_offers(id_params, f"hotelId:{hid}:retry")
+                        except Exception:
+                            pass
+                    if offers:
+                        found = True
+                        break
+
+                if not found:
+                    # Try a batch call as last resort
+                    id_params = {
+                        # hotelIds expects a comma-separated list
+                        "hotelIds": ",".join(hotel_ids[:10]),
+                        "checkInDate": check_in,
+                        "checkOutDate": check_out,
+                        "roomQuantity": 1,
+                        "adults": 1,
+                        "bestRateOnly": True,
+                    }
+                    offers, data, status = _call_hotel_offers(id_params, "hotelIds")
+
         if not offers:
-            return "No hotel offers found (Amadeus).\n\n(Mock data below)\n" + _mock_hotels()
+            return f"No hotel offers found (Amadeus) for city_code={city_code}.\n\n(Mock data below)\n" + _mock_hotels()
 
         results = []
         for idx, off in enumerate(offers[:5], start=1):
@@ -295,6 +490,9 @@ def find_hotels(destination: str, check_in: str, check_out: str, budget: Optiona
             results.append(f"{idx}. {name} — {address} — ${price}")
 
         return "\n".join(results)
+    except requests.HTTPError as e:
+        logger.warning(f"Amadeus hotel search HTTP error; returning mock: {e}")
+        return _mock_hotels()
     except Exception as e:
         logger.error(f"Amadeus hotel search error: {e}")
         return _mock_hotels()
@@ -306,9 +504,10 @@ def attraction_finder(destination: str, interests: Optional[str] = None) -> str:
     """
     try:
         # Use Wikipedia API (completely free, no key needed)
-        search_query = f"{destination} tourism attractions"
+        _, city = parse_destination(destination)
+        search_query = f"{city} tourism attractions"
         if interests:
-            search_query = f"{destination} {interests}"
+            search_query = f"{city} {interests}"
         
         # Search Wikipedia
         search_url = "https://en.wikipedia.org/w/api.php"
@@ -319,30 +518,41 @@ def attraction_finder(destination: str, interests: Optional[str] = None) -> str:
             "format": "json"
         }
         
-        resp = requests.get(search_url, params=search_params, timeout=API_TIMEOUT_SHORT)
+        resp = requests.get(
+            search_url,
+            params=search_params,
+            headers={"User-Agent": "travel-planner-demo/1.0"},
+            timeout=API_TIMEOUT_SHORT,
+        )
         resp.raise_for_status()
         data = resp.json()
         
         if len(data) < 4 or not data[1]:
-            return f"No attractions found for {destination} on Wikipedia."
+            return f"No attractions found for {city} on Wikipedia."
         
         titles = data[1]
         descriptions = data[2]
         urls = data[3]
         
-        logger.info(f"Attraction search (Wikipedia): {destination}, found {len(titles)} results")
+        logger.info(f"Attraction search (Wikipedia): query={search_query!r}, city={city!r}, found={len(titles)}")
         
         results = []
         for idx, (title, desc, url) in enumerate(zip(titles, descriptions, urls), start=1):
             results.append(f"{idx}. {title} — {desc} — {url}")
         
         if not results:
-            return f"No specific attractions found for {destination}. Try a more specific search."
+            return f"No specific attractions found for {city}. Try a more specific search."
         
         return "\n".join(results)
     except requests.HTTPError as e:
-        logger.error(f"Wikipedia API HTTP error: {e}")
-        return f"error: Wikipedia API error: {e}"
+        logger.warning(f"Wikipedia HTTP error; returning mock: {e}")
+    
+        return (
+            "Mock attractions (demo):\n"
+            f"1. Central sights in {city}\n"
+            f"2. Food tour in {city}\n"
+            f"3. Museum or gallery in {city}"
+        )
     except Exception as e:
         logger.error(f"Attraction search error: {e}")
         return f"error: {e}"
@@ -355,6 +565,7 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
     - If `date` is empty, returns current weather.
     - If `date` provided (YYYY-MM-DD), attempts to return forecast for that date (up to ~5 days ahead).
     """
+    _, city = parse_destination(destination)
     api_key = os.getenv("OPENWEATHER_API_KEY")
     # If no API key is provided, use a deterministic mock weather response
     if not api_key:
@@ -387,13 +598,13 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
             is_valid, err_msg = validate_date_format(date, "date")
             if not is_valid:
                 return err_msg
-            return _mock_weather(destination, date)
-        return _mock_weather(destination, None)
+            return _mock_weather(city, date)
+        return _mock_weather(city, None)
 
     try:
         if not date:
             url = "https://api.openweathermap.org/data/2.5/weather"
-            params = {"q": destination, "appid": api_key, "units": "metric"}
+            params = {"q": city, "appid": api_key, "units": "metric"}
             resp = requests.get(url, params=params, timeout=API_TIMEOUT_SHORT)
             resp.raise_for_status()
             data = resp.json()
@@ -401,8 +612,8 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
             temp = data.get("main", {}).get("temp")
             feels = data.get("main", {}).get("feels_like")
             humidity = data.get("main", {}).get("humidity")
-            logger.info(f"Weather check: {destination}")
-            return f"Current weather in {destination}: {desc}, {temp}°C (feels like {feels}°C), humidity {humidity}%"
+            logger.info(f"Weather check: city={city}")
+            return f"Current weather in {city}: {desc}, {temp}°C (feels like {feels}°C), humidity {humidity}%"
 
         # date provided: validate and fetch forecast
         is_valid, err_msg = validate_date_format(date, "date")
@@ -415,7 +626,7 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
             return "error: historical data not supported by this tool"
 
         url = "https://api.openweathermap.org/data/2.5/forecast"
-        params = {"q": destination, "appid": api_key, "units": "metric"}
+        params = {"q": city, "appid": api_key, "units": "metric"}
         resp = requests.get(url, params=params, timeout=API_TIMEOUT_SHORT)
         resp.raise_for_status()
         data = resp.json()
@@ -438,8 +649,8 @@ def weather_checker(destination: str, date: Optional[str] = None) -> str:
         temp = best.get("main", {}).get("temp")
         humidity = best.get("main", {}).get("humidity")
         dt_txt = best.get("dt_txt")
-        logger.info(f"Weather forecast: {destination} on {date}")
-        return f"Forecast for {destination} on {date} ({dt_txt}): {desc}, {temp}°C, humidity {humidity}%"
+        logger.info(f"Weather forecast: city={city} date={date}")
+        return f"Forecast for {city} on {date} ({dt_txt}): {desc}, {temp}°C, humidity {humidity}%"
     except requests.HTTPError as e:
         logger.error(f"Weather check HTTP error: {e}")
         return f"error: HTTP error: {e}"

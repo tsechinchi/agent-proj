@@ -47,8 +47,13 @@ def enhance_request(state: TravelState) -> TravelState:
     if not user_req:
         return {**state, "notes": ["request missing"], "plan": ""}
 
-    resp = prompt_enhance_model.invoke([HumanMessage(content=f"{prompt_enhance_sys_pmt}\n\nUser request: {user_req}")])
-    text = _text_from_model(resp)
+    try:
+        resp = prompt_enhance_model.invoke([HumanMessage(content=f"{prompt_enhance_sys_pmt}\n\nUser request: {user_req}")])
+        text = _text_from_model(resp)
+    except Exception as e:
+        # Keep graph running even if the upstream LLM call fails.
+        logger.warning(f"LLM error in enhance_request (falling back to demo): {type(e).__name__}")
+        text = "Mock response: LLM key missing (offline mode)."
     notes = state.get("notes") or []
     notes = notes + ["request enhanced"]
     return {**state, "plan": text, "notes": notes}
@@ -57,8 +62,24 @@ def enhance_request(state: TravelState) -> TravelState:
 def plan_details(state: TravelState) -> TravelState:
     plan_seed = state.get("plan") or state.get("request") or ""
     duration = state.get("duration") or 3
-    resp = detail_plan_model.invoke([HumanMessage(content=f"{detail_plan_sys_pmt}\n\nDuration: {duration} days\n\nContext:\n{plan_seed}")])
-    text = _text_from_model(resp)
+    
+    try:
+        # Include structured trip fields to help the model mention origin/destination/dates
+        structured = (
+            f"Origin: {state.get('origin') or 'N/A'}\n"
+            f"Destination: {state.get('destination') or 'N/A'}\n"
+            f"Depart: {state.get('depart_date') or 'N/A'}\n"
+            f"Return: {state.get('return_date') or 'N/A'}\n"
+            f"Check-in: {state.get('check_in') or 'N/A'}\n"
+            f"Check-out: {state.get('check_out') or 'N/A'}\n"
+            f"Interests: {state.get('interests') or 'N/A'}\n"
+        )
+        resp = detail_plan_model.invoke([HumanMessage(content=f"{detail_plan_sys_pmt}\n\nDuration: {duration} days\n\nStructured trip:\n{structured}\nContext:\n{plan_seed}")])
+        text = _text_from_model(resp)
+    except Exception as e:
+        logger.warning(f"LLM error in plan_details (falling back to demo): {type(e).__name__}")
+        text = f"Day-by-Day Itinerary ({duration} days):\n\n• Day 1: Arrival & orientation\n• Days 2-{duration-1}: Sightseeing, local cuisine, cultural activities\n• Day {duration}: Departure\n\nEstimated Budget: $2,000-4,000 depending on accommodation & dining."
+    
     notes = state.get("notes") or []
     notes = notes + [f"draft {duration}-day itinerary"]
     return {**state, "plan": text, "notes": notes}
@@ -69,35 +90,86 @@ def fetch_inventory(state: TravelState) -> TravelState:
     origin = state.get("origin")
     dest = state.get("destination")
     depart = state.get("depart_date")
+    tool_notes: list[str] = []
 
+    # Flights
     if origin and dest and depart:
-        outputs.append(
-            find_flights.invoke({
+        try:
+            resp = find_flights.invoke({
                 "origin": origin,
                 "destination": dest,
                 "depart_date": depart,
                 "return_date": state.get("return_date"),
             })
-        )
+            logger.info(f"find_flights returned {len(str(resp))} chars")
+            s = str(resp)
+            outputs.append(f"Flights: {s[:1000]}")
+            if "mock" in s.lower():
+                tool_notes.append("Flights: mock data returned")
+            else:
+                tool_notes.append("Flights: live data returned")
+        except Exception as e:
+            logger.exception("find_flights invocation failed")
+            outputs.append(f"Flights: error: {e}")
+            tool_notes.append(f"Flights: error: {e}")
     else:
         outputs.append("Skipped flights: origin/destination/depart_date missing.")
 
     check_in = state.get("check_in")
     check_out = state.get("check_out")
+    # Hotels
     if dest and check_in and check_out:
-        outputs.append(find_hotels.invoke({"destination": dest, "check_in": check_in, "check_out": check_out}))
+        try:
+            resp = find_hotels.invoke({"destination": dest, "check_in": check_in, "check_out": check_out})
+            logger.info(f"find_hotels returned {len(str(resp))} chars")
+            s = str(resp)
+            outputs.append(f"Hotels: {s[:1000]}")
+            if "mock" in s.lower():
+                tool_notes.append("Hotels: mock data returned")
+            else:
+                tool_notes.append("Hotels: live data returned")
+        except Exception as e:
+            logger.exception("find_hotels invocation failed")
+            outputs.append(f"Hotels: error: {e}")
+            tool_notes.append(f"Hotels: error: {e}")
     else:
         outputs.append("Skipped hotels: destination/check_in/check_out missing.")
 
     interests = state.get("interests")
+    # Attractions & Weather
     if dest:
-        outputs.append(attraction_finder.invoke({"destination": dest, "interests": interests}))
-        outputs.append(weather_checker.invoke({"destination": dest, "date": depart}))
+        try:
+            resp = attraction_finder.invoke({"destination": dest, "interests": interests})
+            logger.info(f"attraction_finder returned {len(str(resp))} chars")
+            s = str(resp)
+            outputs.append(f"Attractions: {s[:1000]}")
+            if "mock" in s.lower():
+                tool_notes.append("Attractions: mock data returned")
+            else:
+                tool_notes.append("Attractions: live data returned")
+        except Exception as e:
+            logger.exception("attraction_finder invocation failed")
+            outputs.append(f"Attractions: error: {e}")
+            tool_notes.append(f"Attractions: error: {e}")
+
+        try:
+            resp = weather_checker.invoke({"destination": dest, "date": depart})
+            logger.info(f"weather_checker returned {len(str(resp))} chars")
+            s = str(resp)
+            outputs.append(f"Weather: {s[:1000]}")
+            if "mock" in s.lower():
+                tool_notes.append("Weather: mock data returned")
+            else:
+                tool_notes.append("Weather: live data returned")
+        except Exception as e:
+            logger.exception("weather_checker invocation failed")
+            outputs.append(f"Weather: error: {e}")
+            tool_notes.append(f"Weather: error: {e}")
     else:
         outputs.append("Skipped attractions/weather: destination missing.")
 
     notes = state.get("notes") or []
-    notes = notes + ["tools attempted"]
+    notes = notes + tool_notes + ["tools attempted"]
     return {**state, "inventory": outputs, "notes": notes}
 
 

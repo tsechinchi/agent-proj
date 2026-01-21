@@ -82,7 +82,7 @@ def build_llm():
         return MockLLM()
     return ChatOpenAI(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
-        base_url="https://openrouter.io/api/v1",
+        base_url="https://openrouter.ai/api/v1",
         api_key=SecretStr(api_key),
         temperature=0,
     )

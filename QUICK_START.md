@@ -57,11 +57,11 @@ AMADEUS_ENV="test"
 # Install dependencies
 pip install -e .
 
-# Test it works
-python main.py "Plan a 5-day trip to Tokyo" \
-  --duration 5 \
-  --interests "food, culture"
+# Run the Streamlit web interface
+uv run streamlit run web_api.py
 ```
+
+The app will open at `http://localhost:8501` in your browser.
 
 ---
 
@@ -106,24 +106,28 @@ ALLOW_AUTO_EMAIL_PDF="true"
 
 ## 🧪 Test Your Setup
 
-```bash
-# Test 1: Basic request (uses LLM + Wikipedia)
-python main.py "I want to visit Paris"
+Once the Streamlit app is running at `http://localhost:8501`:
 
-# Test 2: With weather data
-python main.py "5-day Tokyo trip in July" --duration 5
+1. **Basic Request** — In the form, enter: "I want to visit Paris"
+   - Click "Generate Travel Plan"
+   - Should return enhanced request and itinerary
 
-# Test 3: Full parameters (flights, hotels, attractions)
-python main.py "Plan my Italy vacation" \
-  --origin JFK \
-  --destination FCO \
-  --depart 2025-07-01 \
-  --return 2025-07-10 \
-  --check-in 2025-07-01 \
-  --check-out 2025-07-10 \
-  --interests "art, food, history" \
-  --duration 10
-```
+2. **With Duration** — Enter: "5-day Tokyo trip in July" with Duration = 5
+   - Should generate weather-aware itinerary
+
+3. **Full Parameters** — Fill in all fields:
+   - Request: "Plan my Italy vacation"
+   - Origin: JFK
+   - Destination: FCO
+   - Departure Date: 2025-07-01
+   - Return Date: 2025-07-10
+   - Check-in / Check-out: Same as departure/return
+   - Interests: "art, food, history"
+   - Duration: 10
+   - Click "Generate Travel Plan"
+   - Should trigger flights, hotels, attractions, and weather lookups
+
+All results appear in the **Results** section with tabs for Plan, Tool Results, and Execution Notes.
 
 ---
 
