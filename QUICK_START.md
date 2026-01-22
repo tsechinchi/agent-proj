@@ -28,7 +28,7 @@
 
 ### Step 2: Configure Environment (2 minutes)
 
-Copy `keys.env` to `.env` and update:
+Update .env:
 
 ```bash
 # Required (FREE)
@@ -49,13 +49,21 @@ AMADEUS_CLIENT_SECRET="your-client-secret"
 AMADEUS_ENV="test"
 ```
 
+⚠️ **Amadeus Sandbox Limitations:**
+- Only supports 7 cities: Barcelona, Berlin, London, Madrid, New York, Paris, Rome
+- Can be unstable (500 errors, timeouts, empty results)
+- When it fails, the system falls back to mock data automatically
+⚠️ **PDF/Email not fixed:**
+- Currently both these function don't work
+
 ---
 
 ### Step 3: Install & Run (3 minutes)
 
 ```bash
 # Install dependencies
-pip install -e .
+pip install uv 
+uv sync
 
 # Run the Streamlit web interface
 uv run streamlit run web_api.py
@@ -108,6 +116,11 @@ ALLOW_AUTO_EMAIL_PDF="true"
 
 Once the Streamlit app is running at `http://localhost:8501`:
 
+**💡 Destination Tips:**
+- Supported cities (Amadeus sandbox): `NYC`, `PAR`, `LON`, `ROM`, `BER`, `MAD`, `BCN`
+- Typos auto-correct: `NYK` → `NYC`, `LDN` → `LON`, `Roma` → `ROM`
+- Other cities work with mock data
+
 1. **Basic Request** — In the form, enter: "I want to visit Paris"
    - Click "Generate Travel Plan"
    - Should return enhanced request and itinerary
@@ -151,21 +164,6 @@ All results appear in the **Results** section with tabs for Plan, Tool Results, 
 
 ---
 
-## 🔄 Upgrade to Real Data (When Needed)
-
-### Option 1: Free Alternatives
-**Skyscanner Rapid API** (Free tier)
-```bash
-# Add to .env
-RAPIDAPI_KEY="your-free-key"
-```
-
-**Booking.com Affiliate API** (Free, commission-based)
-```bash
-# Add to .env
-BOOKING_AFFILIATE_ID="your-affiliate-id"
-```
-
 ### Option 2: Paid / Sandbox APIs (Amadeus)
 If you want live or sandbox flight & hotel data use Amadeus credentials. The
 project will continue to work without these keys (it falls back to mock data).
@@ -183,6 +181,23 @@ credentials are present and otherwise return deterministic mock results.
 ---
 
 ## ❓ Troubleshooting
+
+### Destination not recognized / "not available in Amadeus sandbox"
+- **Amadeus sandbox only supports**: Barcelona, Berlin, London, Madrid, New York, Paris, Rome
+- Use correct codes: `NYC` (not `NYK`), `LON` (not `LDN`), `PAR`, `ROM`, `BER`, `MAD`, `BCN`
+- The system auto-corrects common typos: `NYK` → `NYC`, `LDN` → `LON`, `Roma` → `ROM`
+- For unsupported cities, the system will use mock data automatically
+
+### Amadeus API errors / empty results
+The Amadeus sandbox can be **unstable**. Common issues:
+- **500 Internal Server Error**: Sandbox is overloaded — retry later or use mock mode
+- **Empty hotel/flight results**: Even for supported cities, sandbox data is limited
+- **Timeout errors**: Sandbox response times can be slow
+
+**Solutions:**
+- Wait and retry — sandbox instability is often temporary
+- Use mock mode for demos (unset `AMADEUS_CLIENT_ID`)
+- Check Amadeus status: https://status.amadeus.com/
 
 ### "OPENAI_API_KEY not set"
 - Make sure `.env` file exists
@@ -236,5 +251,3 @@ Start planning trips:
 ```bash
 python main.py "Where should I go for a week in summer?"
 ```
-
-For questions or issues, see [README.md](README.md) or [API_MIGRATION_SUMMARY.md](API_MIGRATION_SUMMARY.md).
