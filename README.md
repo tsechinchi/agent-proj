@@ -141,6 +141,8 @@ python main.py "I want a 5-day trip to Tokyo for food exploration" \
   --check-in 2025-06-01 --check-out 2025-06-05 --interests "food markets, ramen" \
   --duration 5
 ```
+⚠️ **PDF/Email not fixed:**
+- Currently both these function don't work
 
 **Note:** Flights and hotels use mock data for demo purposes. For production use, integrate with:
 - Free alternatives: Skyscanner API, Booking.com Affiliate API

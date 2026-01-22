@@ -1,8 +1,8 @@
 # Quick Start Guide - Minimized Free API Setup
 
-## 🚀 Get Started in 10 Minutes
+## 🚀 Get Started 
 
-### Step 1: Get Your Free API Keys (5 minutes)
+### Step 1: Get Your Free API Keys 
 
 #### 1.1 OpenRouter (Free LLM)
 1. Go to https://openrouter.ai/
@@ -10,8 +10,6 @@
 3. Go to "Keys" section
 4. Click "Create Key"
 5. Copy your key: `sk-or-v1-...`
-
-**Cost**: $0/month (free models available)
 
 ---
 
@@ -22,11 +20,9 @@
 4. Go to API Keys section
 5. Copy your default API key
 
-**Cost**: $0/month (1000 calls/day free)
-
 ---
 
-### Step 2: Configure Environment (2 minutes)
+### Step 2: Configure Environment
 
 Update .env:
 
