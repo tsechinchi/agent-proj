@@ -56,10 +56,6 @@ cd agent-proj
 pip install uv
 uv sync
 
-
-
-## Configuration
-
 ### Minimal API Setup (2 Free APIs)
 
 #### 1. OpenRouter (Free LLM)
