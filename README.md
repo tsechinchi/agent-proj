@@ -6,8 +6,6 @@ Multi-agent travel planning system with observability, deployment, and evaluatio
 
 **New user?** See [QUICK_START.md](QUICK_START.md) for 10-minute setup guide.
 
-**Want details?** See [API_COMPARISON.md](API_COMPARISON.md) for full provider comparison.
-
 
 ---
 
