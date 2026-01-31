@@ -115,19 +115,6 @@ OPENAI_API_KEY="sk-or-v1-your-openrouter-key"
 # Required: Weather (Free - 1000 calls/day)
 OPENWEATHER_API_KEY="your-openweather-key"
 
-# Optional: Email notifications
-SMTP_EMAIL="your-email@gmail.com"
-SMTP_PASSWORD="your-app-specific-password"
-ALLOW_AUTO_EMAIL_PDF="false"
-
-# Optional: Phoenix Observability
-ENABLE_PHOENIX_TRACING="true"
-PHOENIX_ENDPOINT="http://localhost:6006"
-
-# Optional: Deployment settings
-DEPLOYMENT_STRATEGY="local"  # local, docker, kubernetes, cloud, edge
-DEPLOYMENT_OPTIMIZATION_LEVEL="moderate"  # none, light, moderate, aggressive
-```
 
 ## Usage
 
