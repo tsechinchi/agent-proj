@@ -34,7 +34,7 @@ This means users can type destinations naturally without worrying about exact IA
      fall back to a deterministic mock weather response when `OPENWEATHER_API_KEY` is not set.
 
 **Optional / Paid (not required to run):**
-- Amadeus, Bright Data — production integrations only; the project uses mock data or
+- Amadeus — production integrations only; the project uses mock data or
     free alternatives by default.
 
 **What's Free / Mocked by Default:**
