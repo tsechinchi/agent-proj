@@ -94,15 +94,6 @@ Notes:
     prefer `AMADEUS_CLIENT_ID` and `AMADEUS_CLIENT_SECRET`.
 ```
 
-#### 3. Optional: Email via Gmail SMTP
-For PDF delivery (optional):
-1. Enable 2FA on Gmail
-2. Generate app password at https://myaccount.google.com/apppasswords
-```bash
-export SMTP_EMAIL="your-email@gmail.com"
-export SMTP_PASSWORD="your-app-specific-password"
-export ALLOW_AUTO_EMAIL_PDF="true"
-```
 
 ### Environment Variables
 
