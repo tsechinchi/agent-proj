@@ -31,10 +31,7 @@ Update .env:
 OPENAI_API_KEY="sk-or-v1-your-openrouter-key-here"
 OPENWEATHER_API_KEY="your-openweather-key-here"
 
-# Optional (for email)
-SMTP_EMAIL="your-email@gmail.com"
-SMTP_PASSWORD="your-app-password"
-ALLOW_AUTO_EMAIL_PDF="false"
+
 ```
 
 **Optional (Amadeus sandbox for flights & hotels):**
