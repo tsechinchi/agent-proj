@@ -49,9 +49,6 @@ AMADEUS_ENV="test"
 - Only supports 7 cities: Barcelona, Berlin, London, Madrid, New York, Paris, Rome
 - Can be unstable (500 errors, timeouts, empty results)
 - When it fails, the system falls back to mock data automatically
-⚠️ **PDF/Email not fixed:**
-- Currently both these function don't work
-
 ---
 
 ### Step 3: Install & Run (3 minutes)
@@ -80,31 +77,6 @@ The app will open at `http://localhost:8501` in your browser.
 | Attractions | ✅ Free | Wikipedia API (unlimited) |
 | PDF Generation | ✅ Free | reportlab (local) |
 | Email Sending | ⚙️ Optional | Gmail SMTP (free) |
-
----
-
-## 📧 Optional: Enable Email (Gmail SMTP)
-
-If you want to send itineraries via email:
-
-### 1. Enable 2-Factor Authentication
-1. Go to https://myaccount.google.com/security
-2. Enable 2-Step Verification
-
-### 2. Generate App Password
-1. Go to https://myaccount.google.com/apppasswords
-2. Select "Mail" and "Other (Custom name)"
-3. Enter "Travel Agent"
-4. Copy the 16-character password
-
-### 3. Update .env
-```bash
-SMTP_EMAIL="your-email@gmail.com"
-SMTP_PASSWORD="abcd efgh ijkl mnop"  # Your 16-char app password
-SMTP_SERVER="smtp.gmail.com"
-SMTP_PORT="587"
-ALLOW_AUTO_EMAIL_PDF="true"
-```
 
 ---
 
